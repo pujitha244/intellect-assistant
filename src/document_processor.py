@@ -1,0 +1,549 @@
+import os
+import PyPDF2
+from docx import Document
+from typing import List, Dict, Any
+from pathlib import Path
+import streamlit as st
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+import re
+import spacy
+from config import CHUNK_SIZE, CHUNK_OVERLAP, UPLOADS_DIR
+
+class DocumentProcessor:
+    def __init__(self):
+        # Initialize spaCy for NLP techniques (POS, NER)
+        try:
+            # Try loading from local libs (standalone mode)
+            # The model data is often in a subdirectory like en_core_web_sm-3.7.1
+            root_path = Path(__file__).parent.parent
+            libs_path = root_path / "libs" / "en_core_web_sm"
+            
+            # Find the directory containing config.cfg
+            model_path = None
+            if libs_path.exists():
+                # Check subdirectories
+                subdirs = [d for d in libs_path.iterdir() if d.is_dir() and (d / "config.cfg").exists()]
+                if subdirs:
+                    model_path = subdirs[0]
+                elif (libs_path / "config.cfg").exists():
+                    model_path = libs_path
+            
+            if model_path:
+                self.nlp = spacy.load(model_path)
+            else:
+                self.nlp = spacy.load("en_core_web_sm")
+            self.spacy_ready = True
+        except:
+            self.spacy_ready = False
+            
+        # Multiple chunking strategies
+        self.text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=CHUNK_SIZE,
+            chunk_overlap=CHUNK_OVERLAP,
+            length_function=len,
+            separators=["\n\n", "\n", " ", ""]
+        )
+        
+        # Sentence-aware chunking for better context preservation
+        try:
+            from langchain.text_splitter import SentenceTransformersTokenTextSplitter # type: ignore
+            self.sentence_splitter = SentenceTransformersTokenTextSplitter(
+                chunk_overlap=50,
+                model_name="all-MiniLM-L6-v2"
+            )
+            self.use_sentence_splitting = True
+        except:
+            self.use_sentence_splitting = False
+    
+    def extract_text_from_pdf(self, file_path: str) -> str:
+        """Extract text from PDF file with enhanced structure preservation"""
+        try:
+            text = ""
+            with open(file_path, 'rb') as file:
+                pdf_reader = PyPDF2.PdfReader(file)
+                for page_num, page in enumerate(pdf_reader.pages):
+                    page_text = page.extract_text()
+                    # Clean up the text while preserving structure
+                    page_text = self._clean_pdf_text(page_text)
+                    text += f"\n=== PAGE {page_num + 1} ===\n{page_text}\n"
+            return text
+        except Exception as e:
+            st.error(f"Error reading PDF {file_path}: {str(e)}")
+            return ""
+    
+    def _clean_pdf_text(self, text: str) -> str:
+        """Clean PDF text while preserving structure"""
+        # Remove excessive whitespace but preserve paragraph breaks
+        text = re.sub(r'\n\s*\n\s*\n', '\n\n', text)
+        # Fix common PDF extraction issues
+        text = re.sub(r'([a-z])([A-Z])', r'\1 \2', text)  # Add space between joined words
+        text = re.sub(r'(\d+)([A-Za-z])', r'\1 \2', text)  # Space between numbers and letters
+        # Remove excessive spaces
+        text = re.sub(r' +', ' ', text)
+        return text.strip()
+    
+    def extract_text_from_docx(self, file_path: str) -> str:
+        """Extract text from DOCX file with structure preservation"""
+        try:
+            doc = Document(file_path)
+            text_parts = []
+            
+            for paragraph in doc.paragraphs:
+                if paragraph.text.strip():
+                    # Detect headings and structure
+                    if paragraph.style.name.startswith('Heading'):
+                        text_parts.append(f"\n# {paragraph.text}\n")
+                    else:
+                        text_parts.append(paragraph.text)
+            
+            return '\n'.join(text_parts)
+        except Exception as e:
+            st.error(f"Error reading DOCX {file_path}: {str(e)}")
+            return ""
+    
+    def extract_text_from_txt(self, file_path: str) -> str:
+        """Extract text from TXT file"""
+        try:
+            with open(file_path, 'r', encoding='utf-8') as file:
+                return file.read()
+        except UnicodeDecodeError:
+            try:
+                with open(file_path, 'r', encoding='latin-1') as file:
+                    return file.read()
+            except Exception as e:
+                st.error(f"Error reading TXT {file_path}: {str(e)}")
+                return ""
+        except Exception as e:
+            st.error(f"Error reading TXT {file_path}: {str(e)}")
+            return ""
+    
+    def process_uploaded_file(self, uploaded_file) -> str:
+        """Process uploaded file and extract text"""
+        # Save uploaded file
+        file_path = UPLOADS_DIR / uploaded_file.name
+        with open(file_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        
+        # Extract text based on file type
+        file_extension = uploaded_file.name.lower().split('.')[-1]
+        
+        if file_extension == 'pdf':
+            text = self.extract_text_from_pdf(str(file_path))
+        elif file_extension == 'docx':
+            text = self.extract_text_from_docx(str(file_path))
+        elif file_extension in ['txt', 'md']:
+            text = self.extract_text_from_txt(str(file_path))
+        else:
+            st.error(f"Unsupported file type: {file_extension}")
+            return ""
+        
+        return text
+    
+    def _detect_document_type(self, text: str, filename: str) -> str:
+        """Detect document type for adaptive chunking"""
+        text_lower = text.lower()
+        filename_lower = filename.lower()
+        
+        # CV/Resume detection
+        if any(keyword in text_lower for keyword in ['resume', 'cv', 'curriculum vitae', 'experience', 'education', 'skills']):
+            return "resume"
+        
+        # Research paper detection
+        elif any(keyword in text_lower for keyword in ['abstract', 'introduction', 'methodology', 'conclusion', 'references']):
+            return "research"
+        
+        # Code documentation
+        elif any(keyword in text_lower for keyword in ['api', 'function', 'class', 'method', 'documentation']):
+            return "documentation"
+        
+        # Meeting notes
+        elif any(keyword in text_lower for keyword in ['meeting', 'agenda', 'action items', 'attendees']):
+            return "meeting_notes"
+        
+        return "general"
+    
+    def _adaptive_chunk_size(self, doc_type: str) -> tuple:
+        """Return optimal chunk size and overlap for document type"""
+        chunk_configs = {
+            "resume": (800, 100),        # Smaller chunks for structured data
+            "research": (1200, 200),     # Larger chunks to preserve context
+            "documentation": (1000, 150), # Medium chunks for code docs
+            "meeting_notes": (600, 100),  # Small chunks for discrete topics
+            "general": (1000, 200)       # Default
+        }
+        return chunk_configs.get(doc_type, (1000, 200))
+    
+    def chunk_text(self, text: str, filename: str) -> List[Dict[str, Any]]:
+        """Enhanced chunking with adaptive strategies"""
+        if not text.strip():
+            return []
+        
+        # Detect document type
+        doc_type = self._detect_document_type(text, filename)
+        chunk_size, chunk_overlap = self._adaptive_chunk_size(doc_type)
+        
+        # Create adaptive text splitter
+        adaptive_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            length_function=len,
+            separators=self._get_separators_for_type(doc_type)
+        )
+        
+        # Split text into chunks
+        if self.use_sentence_splitting and doc_type in ["research", "documentation"]:
+            # Use sentence-aware splitting for academic/technical content
+            try:
+                chunks = self.sentence_splitter.split_text(text)
+            except:
+                chunks = adaptive_splitter.split_text(text)
+        else:
+            chunks = adaptive_splitter.split_text(text)
+        
+        # Create chunk objects with enhanced metadata
+        chunk_objects = []
+        for i, chunk in enumerate(chunks):
+            # Extract section information
+            section_info = self._extract_section_info(chunk, doc_type)
+            
+            chunk_objects.append({
+                "content": chunk,
+                "metadata": {
+                    "filename": filename,
+                    "chunk_id": i,
+                    "total_chunks": len(chunks),
+                    "doc_type": doc_type,
+                    "chunk_size": len(chunk),
+                    "section": section_info.get("section", "unknown"),
+                    "has_dates": self._contains_dates(chunk),
+                    "has_numbers": self._contains_numbers(chunk),
+                    "estimated_topic": self._estimate_topic(chunk)
+                }
+            })
+        
+        return chunk_objects
+    
+    def _get_separators_for_type(self, doc_type: str) -> List[str]:
+        """Get document-type specific separators"""
+        separators = {
+            "resume": ["\n\n", "\n•", "\n-", "\n", " "],
+            "research": ["\n\n", "\n", ". ", " "],
+            "documentation": ["\n\n", "\n```", "\n", " "],
+            "meeting_notes": ["\n\n", "\n•", "\n-", "\n", " "],
+            "general": ["\n\n", "\n", " ", ""]
+        }
+        return separators.get(doc_type, ["\n\n", "\n", " ", ""])
+    
+    def _extract_section_info(self, chunk: str, doc_type: str) -> Dict[str, Any]:
+        """Extract section information from chunk"""
+        chunk_lower = chunk.lower()
+        
+        if doc_type == "resume":
+            if any(keyword in chunk_lower for keyword in ['education', 'degree', 'university']):
+                return {"section": "education"}
+            elif any(keyword in chunk_lower for keyword in ['experience', 'work', 'internship']):
+                return {"section": "experience"}
+            elif any(keyword in chunk_lower for keyword in ['skills', 'technologies', 'programming']):
+                return {"section": "skills"}
+            elif any(keyword in chunk_lower for keyword in ['project', 'built', 'developed']):
+                return {"section": "projects"}
+        
+        elif doc_type == "research":
+            if any(keyword in chunk_lower for keyword in ['abstract', 'summary']):
+                return {"section": "abstract"}
+            elif any(keyword in chunk_lower for keyword in ['introduction', 'background']):
+                return {"section": "introduction"}
+            elif any(keyword in chunk_lower for keyword in ['method', 'approach', 'implementation']):
+                return {"section": "methodology"}
+            elif any(keyword in chunk_lower for keyword in ['result', 'finding', 'outcome']):
+                return {"section": "results"}
+        
+        return {"section": "content"}
+    
+    def _contains_dates(self, text: str) -> bool:
+        """Check if chunk contains date information"""
+        date_patterns = [
+            r'\d{4}',  # Year
+            r'\d{1,2}/\d{1,2}/\d{4}',  # MM/DD/YYYY
+            r'\d{1,2}-\d{1,2}-\d{4}',  # MM-DD-YYYY
+            r'(January|February|March|April|May|June|July|August|September|October|November|December)',
+            r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)'
+        ]
+        return any(re.search(pattern, text, re.IGNORECASE) for pattern in date_patterns)
+    
+    def _contains_numbers(self, text: str) -> bool:
+        """Check if chunk contains numerical data"""
+        number_patterns = [
+            r'\d+%',  # Percentages
+            r'\$\d+',  # Money
+            r'\d+\.\d+',  # Decimals
+            r'\d{3,}'  # Large numbers
+        ]
+        return any(re.search(pattern, text) for pattern in number_patterns)
+    
+    def _estimate_topic(self, chunk: str) -> str:
+        """Estimate the main topic of the chunk using precise whole-word matching"""
+        chunk_lower = chunk.lower()
+        
+        # Define keywords with word boundaries to avoid false positives
+        def has_word(word_list, text):
+            for word in word_list:
+                pattern = rf'\b{re.escape(word)}\b'
+                if re.search(pattern, text, re.IGNORECASE):
+                    return True
+            return False
+
+        # Technical topics
+        if has_word(['python', 'javascript', 'programming', 'code', 'algorithm'], chunk_lower):
+            return "technical"
+        elif has_word(['machine learning', 'ai', 'data science', 'ml', 'artificial intelligence'], chunk_lower):
+            return "ai_ml"
+        elif has_word(['project', 'developed', 'built', 'implemented'], chunk_lower):
+            return "projects"
+        elif has_word(['experience', 'work', 'internship', 'job'], chunk_lower):
+            return "experience"
+        elif has_word(['education', 'university', 'degree', 'school'], chunk_lower):
+            return "education"
+        elif has_word(['skill', 'technology', 'tool', 'framework'], chunk_lower):
+            return "skills"
+        else:
+            return "general"
+    
+    def get_uploaded_files(self) -> List[str]:
+        """Get list of uploaded files"""
+        if not UPLOADS_DIR.exists():
+            return []
+        
+        files = []
+        for file_path in UPLOADS_DIR.iterdir():
+            if file_path.is_file() and file_path.suffix.lower() in ['.pdf', '.docx', '.txt', '.md']:
+                files.append(file_path.name)
+        
+        return sorted(files)
+    
+    def generate_dynamic_topics(self, chunks, llm_callback=None):
+        """Advanced Topic Modeling using K-Means Clustering and LLM Labeling"""
+        if not chunks or len(chunks) < 3:
+            return {"General Knowledge": len(chunks)}
+        
+        try:
+            from sklearn.cluster import KMeans
+            from sklearn.feature_extraction.text import TfidfVectorizer
+            import numpy as np
+
+            # 1. Get embeddings for all chunks (using the spaCy model or simple TF-IDF for speed here)
+            texts = [c["content"] for c in chunks]
+            vectorizer = TfidfVectorizer(max_features=500, stop_words='english')
+            X = vectorizer.fit_transform(texts)
+            
+            # 2. Cluster the documents (K=3 to 5 based on library size)
+            num_clusters = min(len(chunks), 5)
+            kmeans = KMeans(n_clusters=num_clusters, random_state=42, n_init=10)
+            kmeans.fit(X)
+            
+            # 3. For each cluster, find the top keywords
+            order_centroids = kmeans.cluster_centers_.argsort()[:, ::-1]
+            terms = vectorizer.get_feature_names_out()
+            
+            cluster_topics = {}
+            for i in range(num_clusters):
+                top_keywords = [terms[ind] for ind in order_centroids[i, :10]]
+                
+                # 4. Use LLM to name the topic if available
+                if llm_callback:
+                    topic_name = llm_callback(top_keywords)
+                else:
+                    topic_name = f"Topic {i+1}: " + ", ".join(top_keywords[:3])
+                
+                cluster_count = sum(1 for label in kmeans.labels_ if label == i)
+                cluster_topics[topic_name] = cluster_count
+            
+            return cluster_topics
+        except Exception as e:
+            return {"Analysis Pending": len(chunks)}
+
+    def get_document_stats(self, chunks: List[Dict[str, Any]], topic_model=None) -> Dict[str, Any]:
+        """Get statistics about processed document"""
+        if not chunks:
+            return {}
+        
+        total_chars = sum(len(chunk["content"]) for chunk in chunks)
+        
+        # Use provided topic model or fallback to counts
+        topic_distribution = topic_model if topic_model else {"General": len(chunks)}
+        
+        return {
+            "total_chunks": len(chunks),
+            "total_characters": total_chars,
+            "topic_distribution": topic_distribution,
+            "has_dates": sum(1 for chunk in chunks if chunk["metadata"]["has_dates"]),
+            "has_numbers": sum(1 for chunk in chunks if chunk["metadata"]["has_numbers"])
+        }
+    
+    def question_type_detector(self, query: str) -> str:
+        """Categorize the question to determine the best NLP strategy"""
+        q = query.lower().strip()
+        
+        # Rule-based triggers
+        if any(w in q for w in ['what is', 'define', 'meaning of', 'definition']):
+            return "DEFINITION"
+        elif any(w in q for w in ['summary', 'main idea', 'summarize', 'overview', 'theme']):
+            return "THEME"
+        elif any(w in q for w in ['why', 'how', 'explain', 'reason']):
+            return "REASONING"
+        elif any(w in q for w in ['who', 'when', 'where', 'list', 'name']):
+            return "FACT"
+        
+        # Fallback to general
+        return "FACT"
+
+    def extract_keywords(self, text: str, top_n: int = 5) -> List[str]:
+        """Extract top keywords using TF-IDF strategy"""
+        try:
+            from sklearn.feature_extraction.text import TfidfVectorizer
+            # Use small ngram range for clean keywords
+            vectorizer = TfidfVectorizer(stop_words='english', max_features=100, ngram_range=(1, 1))
+            X = vectorizer.fit_transform([text])
+            feature_names = vectorizer.get_feature_names_out()
+            scores = X.toarray()[0]
+            
+            # Sort by score
+            indices = scores.argsort()[::-1]
+            return [feature_names[i] for i in indices[:top_n]]
+        except:
+            return 
+    def get_nlp_metadata(self, text: str) -> Dict[str, Any]:
+        """
+        Advanced NLP Analysis Pipeline:
+        - POS-filtered concept extraction with lemmatization & deduplication
+        - TF-IDF based concept ranking (High / Medium / Low)
+        - Smart noise filtering
+        - Clean POS tag table (NOUN, VERB, ADJ only)
+        """
+        if not self.spacy_ready:
+            return {
+                "entities": [{"concept": "NLP System", "type": "System", "importance": "N/A"}],
+                "pos_tags": [{"Token": "spaCy", "POS": "Not Available"}],
+                "error": "spaCy model not found."
+            }
+
+        doc = self.nlp(text[:10000])
+
+        # ── 1. CONCEPT BANK (abstract + domain words) ────────────────────────
+        concept_bank = {
+            'ethics', 'morality', 'compassion', 'fairness', 'integrity',
+            'governance', 'sensibility', 'honesty', 'humility', 'kindness',
+            'justice', 'empathy', 'responsibility', 'accountability',
+            'transparency', 'values', 'virtue', 'duty', 'rights', 'law',
+            'democracy', 'constitution', 'equality', 'freedom', 'dignity',
+            'corruption', 'service', 'leadership', 'welfare', 'policy',
+            'public', 'administration', 'attitude', 'behavior', 'conduct',
+            'commitment', 'dedication', 'reform', 'development', 'society'
+        }
+
+        # ── 2. NOISE BLOCKLIST ────────────────────────────────────────────────
+        blocklist = {
+            'source', 'definition', 'page', 'chapter', 'section',
+            'context', 'document', 'text', 'answer', 'question',
+            'example', 'following', 'based', 'provided', 'information'
+        }
+
+        # ── 3. CONCEPT EXTRACTION (POS-filtered, lemmatized) ─────────────────
+        seen_lemmas = set()
+        raw_concepts = []
+
+        for token in doc:
+            lemma = token.lemma_.lower().strip()
+
+            # Include only NOUN / PROPN that are meaningful
+            if token.pos_ not in ('NOUN', 'PROPN'):
+                continue
+            if token.is_stop or token.is_punct or len(lemma) < 4:
+                continue
+            if lemma in blocklist:
+                continue
+            if lemma in seen_lemmas:
+                continue
+
+            seen_lemmas.add(lemma)
+            label = "CONCEPT" if lemma in concept_bank else "TOPIC"
+            raw_concepts.append(lemma)
+
+        # Also catch spaCy NER for real-world entities
+        ner_results = []
+        for ent in doc.ents:
+            text_low = ent.text.lower().strip()
+            if text_low in blocklist or len(text_low) < 3:
+                continue
+            if text_low in concept_bank:
+                if text_low not in seen_lemmas:
+                    raw_concepts.append(text_low)
+                    seen_lemmas.add(text_low)
+            elif ent.label_ in ('PERSON', 'ORG', 'GPE', 'LOC', 'DATE', 'TIME'):
+                ner_results.append({
+                    "concept": ent.text.title(),
+                    "type": ent.label_,
+                    "importance": "High"
+                })
+
+        # ── 4. TF-IDF RANKING ─────────────────────────────────────────────────
+        def tfidf_rank(terms, full_text):
+            """Assign importance based on frequency and position weight"""
+            text_lower = full_text.lower()
+            scored = []
+            total = len(text_lower.split())
+            for term in terms:
+                freq = text_lower.count(term)
+                # Position bonus: terms in first 30% of text score higher
+                first_pos = text_lower.find(term)
+                pos_score = 1.5 if (first_pos / max(len(text_lower), 1)) < 0.3 else 1.0
+                score = (freq / max(total, 1)) * pos_score * 1000
+
+                if term in concept_bank:
+                    label = "CONCEPT"
+                    score *= 1.5  # boost abstract concepts
+                else:
+                    label = "TOPIC"
+
+                if score > 2.0:
+                    importance = "High"
+                elif score > 0.8:
+                    importance = "Medium"
+                else:
+                    importance = "Low"
+
+                scored.append({
+                    "concept": term.title(),
+                    "type": label,
+                    "importance": importance,
+                    "_score": round(score, 3)
+                })
+
+            # Sort: CONCEPT first, then by score descending
+            scored.sort(key=lambda x: (x["type"] != "CONCEPT", -x["_score"]))
+            return scored
+
+        ranked = tfidf_rank(raw_concepts, text)
+
+        # Merge NER real-world entities at end (they are already ranked High)
+        all_entities = ranked[:15] + ner_results  # cap at top 15 concepts
+
+        # ── 5. CLEAN POS TABLE (NOUN, VERB, ADJ only) ─────────────────────────
+        useful_pos = {'NOUN', 'VERB', 'ADJ', 'PROPN'}
+        clean_pos = []
+        seen_pos_tokens = set()
+        for token in doc:
+            lemma = token.lemma_.lower()
+            if token.pos_ not in useful_pos:
+                continue
+            if token.is_stop or token.is_punct or len(lemma) < 3:
+                continue
+            if lemma in blocklist or lemma in seen_pos_tokens:
+                continue
+            seen_pos_tokens.add(lemma)
+            clean_pos.append({"Token": token.text, "POS": token.pos_, "Lemma": token.lemma_})
+
+        return {
+            "entities": all_entities,
+            "pos_tags": clean_pos[:40]  # cap to top 40 clean tokens
+        }
