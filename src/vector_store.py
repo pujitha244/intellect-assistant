@@ -49,6 +49,9 @@ class VectorStore:
             self.collection = self.client.get_collection(self.collection_name)
         except Exception:  # Catch any exception when collection doesn't exist
             self.collection = self.client.create_collection(self.collection_name)
+            
+        # Hydrate TF-IDF index on startup
+        self._update_tfidf_index()
     
     def add_documents(self, chunks: List[Dict[str, Any]]) -> bool:
         """Add document chunks to vector store"""
@@ -202,7 +205,9 @@ class VectorStore:
             # Add semantic results with weight
             for result in semantic_results:
                 doc_id = f"{result['metadata']['filename']}_{result['metadata']['chunk_id']}"
-                semantic_score = 1 - (result.get('distance', 1) or 1)  # Convert distance to similarity
+                distance = result.get('distance', 1) or 1
+                # Convert L2 distance to a 0-1 similarity score safely
+                semantic_score = 1.0 / (1.0 + float(distance))
                 combined_results[doc_id] = {
                     **result,
                     'semantic_score': semantic_score,
@@ -259,6 +264,22 @@ class VectorStore:
             return formatted_docs
         except Exception as e:
             st.error(f"Error retrieving all documents: {str(e)}")
+            return []
+            
+    def get_chunks_by_filename(self, filename: str) -> List[Dict[str, Any]]:
+        """Retrieve all chunks for a specific file"""
+        try:
+            results = self.collection.get(where={"filename": filename})
+            formatted_docs = []
+            if results['documents']:
+                for i in range(len(results['documents'])):
+                    formatted_docs.append({
+                        "content": results['documents'][i],
+                        "metadata": results['metadatas'][i]
+                    })
+            return formatted_docs
+        except Exception as e:
+            st.error(f"Error retrieving chunks for {filename}: {str(e)}")
             return []
     
     def get_collection_stats(self) -> Dict[str, Any]:

@@ -6,36 +6,10 @@ from pathlib import Path
 import streamlit as st
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 import re
-import spacy
 from config import CHUNK_SIZE, CHUNK_OVERLAP, UPLOADS_DIR
 
 class DocumentProcessor:
     def __init__(self):
-        # Initialize spaCy for NLP techniques (POS, NER)
-        try:
-            # Try loading from local libs (standalone mode)
-            # The model data is often in a subdirectory like en_core_web_sm-3.7.1
-            root_path = Path(__file__).parent.parent
-            libs_path = root_path / "libs" / "en_core_web_sm"
-            
-            # Find the directory containing config.cfg
-            model_path = None
-            if libs_path.exists():
-                # Check subdirectories
-                subdirs = [d for d in libs_path.iterdir() if d.is_dir() and (d / "config.cfg").exists()]
-                if subdirs:
-                    model_path = subdirs[0]
-                elif (libs_path / "config.cfg").exists():
-                    model_path = libs_path
-            
-            if model_path:
-                self.nlp = spacy.load(model_path)
-            else:
-                self.nlp = spacy.load("en_core_web_sm")
-            self.spacy_ready = True
-        except:
-            self.spacy_ready = False
-            
         # Multiple chunking strategies
         self.text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=CHUNK_SIZE,
@@ -322,7 +296,7 @@ class DocumentProcessor:
         return sorted(files)
     
     def generate_dynamic_topics(self, chunks, llm_callback=None):
-        """Advanced Topic Modeling using K-Means Clustering and LLM Labeling"""
+        """Advanced AI-based Topic Modeling using K-Means Clustering and LLM Labeling"""
         if not chunks or len(chunks) < 3:
             return {"General Knowledge": len(chunks)}
         
@@ -331,7 +305,7 @@ class DocumentProcessor:
             from sklearn.feature_extraction.text import TfidfVectorizer
             import numpy as np
 
-            # 1. Get embeddings for all chunks (using the spaCy model or simple TF-IDF for speed here)
+            # 1. Get embeddings for all chunks (using simple TF-IDF for speed here)
             texts = [c["content"] for c in chunks]
             vectorizer = TfidfVectorizer(max_features=500, stop_words='english')
             X = vectorizer.fit_transform(texts)
@@ -380,170 +354,3 @@ class DocumentProcessor:
             "has_numbers": sum(1 for chunk in chunks if chunk["metadata"]["has_numbers"])
         }
     
-    def question_type_detector(self, query: str) -> str:
-        """Categorize the question to determine the best NLP strategy"""
-        q = query.lower().strip()
-        
-        # Rule-based triggers
-        if any(w in q for w in ['what is', 'define', 'meaning of', 'definition']):
-            return "DEFINITION"
-        elif any(w in q for w in ['summary', 'main idea', 'summarize', 'overview', 'theme']):
-            return "THEME"
-        elif any(w in q for w in ['why', 'how', 'explain', 'reason']):
-            return "REASONING"
-        elif any(w in q for w in ['who', 'when', 'where', 'list', 'name']):
-            return "FACT"
-        
-        # Fallback to general
-        return "FACT"
-
-    def extract_keywords(self, text: str, top_n: int = 5) -> List[str]:
-        """Extract top keywords using TF-IDF strategy"""
-        try:
-            from sklearn.feature_extraction.text import TfidfVectorizer
-            # Use small ngram range for clean keywords
-            vectorizer = TfidfVectorizer(stop_words='english', max_features=100, ngram_range=(1, 1))
-            X = vectorizer.fit_transform([text])
-            feature_names = vectorizer.get_feature_names_out()
-            scores = X.toarray()[0]
-            
-            # Sort by score
-            indices = scores.argsort()[::-1]
-            return [feature_names[i] for i in indices[:top_n]]
-        except:
-            return 
-    def get_nlp_metadata(self, text: str) -> Dict[str, Any]:
-        """
-        Advanced NLP Analysis Pipeline:
-        - POS-filtered concept extraction with lemmatization & deduplication
-        - TF-IDF based concept ranking (High / Medium / Low)
-        - Smart noise filtering
-        - Clean POS tag table (NOUN, VERB, ADJ only)
-        """
-        if not self.spacy_ready:
-            return {
-                "entities": [{"concept": "NLP System", "type": "System", "importance": "N/A"}],
-                "pos_tags": [{"Token": "spaCy", "POS": "Not Available"}],
-                "error": "spaCy model not found."
-            }
-
-        doc = self.nlp(text[:10000])
-
-        # ── 1. CONCEPT BANK (abstract + domain words) ────────────────────────
-        concept_bank = {
-            'ethics', 'morality', 'compassion', 'fairness', 'integrity',
-            'governance', 'sensibility', 'honesty', 'humility', 'kindness',
-            'justice', 'empathy', 'responsibility', 'accountability',
-            'transparency', 'values', 'virtue', 'duty', 'rights', 'law',
-            'democracy', 'constitution', 'equality', 'freedom', 'dignity',
-            'corruption', 'service', 'leadership', 'welfare', 'policy',
-            'public', 'administration', 'attitude', 'behavior', 'conduct',
-            'commitment', 'dedication', 'reform', 'development', 'society'
-        }
-
-        # ── 2. NOISE BLOCKLIST ────────────────────────────────────────────────
-        blocklist = {
-            'source', 'definition', 'page', 'chapter', 'section',
-            'context', 'document', 'text', 'answer', 'question',
-            'example', 'following', 'based', 'provided', 'information'
-        }
-
-        # ── 3. CONCEPT EXTRACTION (POS-filtered, lemmatized) ─────────────────
-        seen_lemmas = set()
-        raw_concepts = []
-
-        for token in doc:
-            lemma = token.lemma_.lower().strip()
-
-            # Include only NOUN / PROPN that are meaningful
-            if token.pos_ not in ('NOUN', 'PROPN'):
-                continue
-            if token.is_stop or token.is_punct or len(lemma) < 4:
-                continue
-            if lemma in blocklist:
-                continue
-            if lemma in seen_lemmas:
-                continue
-
-            seen_lemmas.add(lemma)
-            label = "CONCEPT" if lemma in concept_bank else "TOPIC"
-            raw_concepts.append(lemma)
-
-        # Also catch spaCy NER for real-world entities
-        ner_results = []
-        for ent in doc.ents:
-            text_low = ent.text.lower().strip()
-            if text_low in blocklist or len(text_low) < 3:
-                continue
-            if text_low in concept_bank:
-                if text_low not in seen_lemmas:
-                    raw_concepts.append(text_low)
-                    seen_lemmas.add(text_low)
-            elif ent.label_ in ('PERSON', 'ORG', 'GPE', 'LOC', 'DATE', 'TIME'):
-                ner_results.append({
-                    "concept": ent.text.title(),
-                    "type": ent.label_,
-                    "importance": "High"
-                })
-
-        # ── 4. TF-IDF RANKING ─────────────────────────────────────────────────
-        def tfidf_rank(terms, full_text):
-            """Assign importance based on frequency and position weight"""
-            text_lower = full_text.lower()
-            scored = []
-            total = len(text_lower.split())
-            for term in terms:
-                freq = text_lower.count(term)
-                # Position bonus: terms in first 30% of text score higher
-                first_pos = text_lower.find(term)
-                pos_score = 1.5 if (first_pos / max(len(text_lower), 1)) < 0.3 else 1.0
-                score = (freq / max(total, 1)) * pos_score * 1000
-
-                if term in concept_bank:
-                    label = "CONCEPT"
-                    score *= 1.5  # boost abstract concepts
-                else:
-                    label = "TOPIC"
-
-                if score > 2.0:
-                    importance = "High"
-                elif score > 0.8:
-                    importance = "Medium"
-                else:
-                    importance = "Low"
-
-                scored.append({
-                    "concept": term.title(),
-                    "type": label,
-                    "importance": importance,
-                    "_score": round(score, 3)
-                })
-
-            # Sort: CONCEPT first, then by score descending
-            scored.sort(key=lambda x: (x["type"] != "CONCEPT", -x["_score"]))
-            return scored
-
-        ranked = tfidf_rank(raw_concepts, text)
-
-        # Merge NER real-world entities at end (they are already ranked High)
-        all_entities = ranked[:15] + ner_results  # cap at top 15 concepts
-
-        # ── 5. CLEAN POS TABLE (NOUN, VERB, ADJ only) ─────────────────────────
-        useful_pos = {'NOUN', 'VERB', 'ADJ', 'PROPN'}
-        clean_pos = []
-        seen_pos_tokens = set()
-        for token in doc:
-            lemma = token.lemma_.lower()
-            if token.pos_ not in useful_pos:
-                continue
-            if token.is_stop or token.is_punct or len(lemma) < 3:
-                continue
-            if lemma in blocklist or lemma in seen_pos_tokens:
-                continue
-            seen_pos_tokens.add(lemma)
-            clean_pos.append({"Token": token.text, "POS": token.pos_, "Lemma": token.lemma_})
-
-        return {
-            "entities": all_entities,
-            "pos_tags": clean_pos[:40]  # cap to top 40 clean tokens
-        }

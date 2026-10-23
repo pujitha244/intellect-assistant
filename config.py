@@ -13,7 +13,7 @@ CHROMA_DB_DIR.mkdir(parents=True, exist_ok=True)
 
 # Model configurations
 EMBEDDING_MODEL = "all-MiniLM-L6-v2"
-LLM_MODEL = "llama3.2:1b"  # Make sure this matches exactly what you have
+LLM_MODEL = "qwen2.5:0.5b" # Make sure this matches exactly what you have
 OLLAMA_BASE_URL = "http://localhost:11434"
 
 # Chunking parameters

@@ -1,6 +1,6 @@
 # Advanced Personal Knowledge Assistant - RAG System
 
-A production-ready Retrieval-Augmented Generation (RAG) system that allows users to upload personal documents and ask natural language questions to get accurate answers with source citations.
+A production-ready Retrieval-Augmented Generation (RAG) system that allows users to upload personal documents and ask questions to get accurate answers with source citations using local AI.
 
 ## Features
 
@@ -50,7 +50,7 @@ streamlit run app.py
 
 1. **Upload Documents**: Use the sidebar to upload PDF, DOCX, or TXT files
 2. **Process Documents**: Click "Process Documents" to add them to your knowledge base
-3. **Ask Questions**: Type natural language questions about your documents
+3. **Ask Questions**: Type questions about your documents to get AI-generated answers
 4. **Get Answers**: Receive detailed answers with source citations and search insights
 
 ## Project Structure
@@ -60,7 +60,7 @@ personal_knowledge_assistant/
 ├── app.py                      # Main Streamlit application
 ├── src/
 │   ├── document_processor.py   # Document processing and chunking
-│   ├── vector_store.py         # ChromaDB and hybrid search
+│   ├── vector_store.py         # ChromaDB and hybrid search, including AI-based topic modeling
 │   ├── qa_chain.py             # Question-answering with LLM
 │   └── conversation_manager.py # Conversation memory management
 ├── data/
