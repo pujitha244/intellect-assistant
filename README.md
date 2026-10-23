@@ -99,15 +99,3 @@ Key settings in `config.py`:
 - `LLM_MODEL`: Ollama model to use (default: "llama3.2:1b")
 - `MAX_RETRIEVED_CHUNKS`: Number of chunks to retrieve (default: 5)
 
-## Contributing
-
-This is a personal project built for learning and portfolio purposes. Feel free to fork and adapt for your own use.
-
-## Author
-
-**Fahd Ahmad**  
-Software Engineering Graduate | AI/ML Enthusiast  
-
----
-
-Built with ❤️ for personal knowledge management and RAG system learning.
