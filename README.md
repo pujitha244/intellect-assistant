@@ -1,4 +1,4 @@
- ##Intellect Assistant – Advanced Local RAG System
+ Intellect Assistant – Advanced Local RAG System
 
 **A privacy-focused AI assistant for document analysis and question answering using Retrieval-Augmented Generation (RAG).**
 
